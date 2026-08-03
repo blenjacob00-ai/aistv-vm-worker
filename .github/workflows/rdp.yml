@@ -36,6 +36,7 @@ jobs:
         env:
           INSTANCE_ID: ${{ matrix.instance_id }}
           VM_DURATION_MINUTES: ${{ github.event.client_payload.duration }}
+          DISCORD_ID: ${{ github.event.client_payload.session }}
         run: |
           & ./scripts/provision.ps1
       - name: Upload VM credentials
@@ -45,6 +46,23 @@ jobs:
           path: vm-creds.json
           if-no-files-found: warn
           retention-days: 1
+      - name: Notify Bot via Webhook
+        if: always()
+        shell: bash
+        env:
+          BOT_WEBHOOK_URL: ${{ secrets.BOT_WEBHOOK_URL }}
+          BOT_WEBHOOK_SECRET: ${{ secrets.BOT_WEBHOOK_SECRET }}
+        run: |
+          URL="${BOT_WEBHOOK_URL:-}"
+          if [ -z "$URL" ] || [ ! -f vm-creds.json ]; then
+            echo "skip webhook: not configured or no creds file"
+            exit 0
+          fi
+          curl -sS -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "X-Bot-Secret: ${BOT_WEBHOOK_SECRET:-}" \
+            --data-binary @vm-creds.json \
+            || echo "Bot webhook notify failed (polling will catch it)"
       - name: Keep-Alive
         shell: pwsh
         env:
