@@ -18,37 +18,24 @@ fi
 LOG_DIR="$HOME/sshx_logs"
 mkdir -p "$LOG_DIR"
 chmod 777 "$LOG_DIR" 2>/dev/null || true
-SSHX_PID=""
-SSHX_URL=""
-MINS="${DURATION_MINUTES:-60}"
-DEADLINE=$(( $(date +%s) + MINS * 60 ))
+OUT="$LOG_DIR/sshx.out"
+: > "$OUT"
 
-restart_sshx() {
-  sudo script -q -e -c "SSHX_KEEP_ALIVE=true sshx" "$LOG_DIR/sshx.pty" >> "$LOG_DIR/sshx.out" 2>&1 &
-  SSHX_PID=$!
-}
+# Khoi dong sshx nen (session song theo job, Keep-Alive giu job khong ket thuc)
+nohup sudo script -q -e -c "SSHX_KEEP_ALIVE=true sshx" "$LOG_DIR/sshx.pty" >> "$OUT" 2>&1 &
 
-extract_url() {
-  cat "$LOG_DIR/sshx.out" "$LOG_DIR/sshx.pty" 2>/dev/null \
-    | sed -r 's/\x1B\[[0-9;]*[mK]//g' \
-    | grep -oE 'https://sshx\.io/[^[:space:]"]+' \
-    | tail -n 1 || true
-}
-
-restart_sshx
-while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-  if ! kill -0 "$SSHX_PID" 2>/dev/null; then
-    restart_sshx
-  fi
-  NEW_URL="$(extract_url)"
-  if [ -n "$NEW_URL" ] && [ "$NEW_URL" != "$SSHX_URL" ]; then
-    SSHX_URL="$NEW_URL"
-    echo "SSHX_URL: $SSHX_URL"
-  fi
-  sleep 15
+# Doi URL toi da ~60s
+URL=""
+for i in $(seq 1 20); do
+  URL="$(sed -r 's/\x1B\[[0-9;]*[mK]//g' "$OUT" 2>/dev/null \
+    | grep -oE 'https://sshx\.io/[^[:space:]"]+' | tail -n 1 || true)"
+  [ -n "$URL" ] && break
+  sleep 3
 done
-echo "Username: AISTV"
-echo "Hostname: AISTV"
-echo "SSHX_URL: ${SSHX_URL:-pending}"
-echo "Session finished after ${MINS} minutes."
+
+echo "SSHX_URL: ${URL:-pending}"
+if [ -n "$URL" ]; then
+  printf '{"sshx_url":"%s","username":"root","hostname":"root"}\n' "$URL" > ssh_url.txt
+fi
+echo "Session keep-alive will run in workflow step."
 exit 0
