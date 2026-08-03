@@ -21,21 +21,43 @@ chmod 777 "$LOG_DIR" 2>/dev/null || true
 OUT="$LOG_DIR/sshx.out"
 : > "$OUT"
 
-# Khoi dong sshx nen (session song theo job, Keep-Alive giu job khong ket thuc)
-nohup sudo script -q -e -c "SSHX_KEEP_ALIVE=true sshx" "$LOG_DIR/sshx.pty" >> "$OUT" 2>&1 &
+# Khoi dong sshx nen, setsid de khong bi GitHub kill khi step doi step khac
+RUN_ID="${GITHUB_RUN_ID:-0}"
+MINS="${DURATION_MINUTES:-60}"
+DEADLINE=$(( $(date +%s) + MINS * 60 ))
+setsid nohup sudo script -q -e -c "SSHX_KEEP_ALIVE=true sshx" "$LOG_DIR/sshx.pty" >> "$OUT" 2>&1 &
+SSHX_PID=$!
 
-# Doi URL toi da ~60s
+# Doi URL toi da ~60s, ghi file + bao webhook NGAY trong step nay (link con song)
 URL=""
-for i in $(seq 1 20); do
+for i in $(seq 1 30); do
   URL="$(sed -r 's/\x1B\[[0-9;]*[mK]//g' "$OUT" 2>/dev/null \
     | grep -oE 'https://sshx\.io/[^[:space:]"]+' | tail -n 1 || true)"
-  [ -n "$URL" ] && break
-  sleep 3
+  if [ -n "$URL" ]; then
+    echo "SSHX_URL: $URL"
+    printf '{"sshx_url":"%s","username":"root","hostname":"root","instance_id":"%s","discord_id":"%s","kind":"vps","run_id":"%s"}\n' \
+      "$URL" "${INSTANCE_ID:-1}" "${DISCORD_ID:-}" "$RUN_ID" > ssh_url.txt
+    if [ -n "${BOT_WEBHOOK_URL:-}" ]; then
+      curl -sS -X POST "${BOT_WEBHOOK_URL}" \
+        -H "Content-Type: application/json" \
+        -H "X-Bot-Secret: ${BOT_WEBHOOK_SECRET:-}" \
+        --data-binary @ssh_url.txt \
+        && echo "Webhook sent OK" || echo "Webhook failed (bot se poll log thay)"
+    fi
+    break
+  fi
+  sleep 2
 done
-
 echo "SSHX_URL: ${URL:-pending}"
-if [ -n "$URL" ]; then
-  printf '{"sshx_url":"%s","username":"root","hostname":"root"}\n' "$URL" > ssh_url.txt
-fi
-echo "Session keep-alive will run in workflow step."
+
+# Giu session song den deadline NGAY TRONG step nay (step chay full thoi luong)
+while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+  if ! kill -0 "$SSHX_PID" 2>/dev/null; then
+    echo "sshx died, restarting..."
+    setsid nohup sudo script -q -e -c "SSHX_KEEP_ALIVE=true sshx" "$LOG_DIR/sshx.pty" >> "$OUT" 2>&1 &
+    SSHX_PID=$!
+  fi
+  sleep 60
+done
+echo "Session finished after ${MINS} minutes."
 exit 0
