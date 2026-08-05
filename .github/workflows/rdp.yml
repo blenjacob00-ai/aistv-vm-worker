@@ -46,23 +46,55 @@ jobs:
           path: vm-creds.json
           if-no-files-found: warn
           retention-days: 1
-      - name: Notify Bot via Webhook
+      - name: Upload clip to Driveway (optional, pluggable)
+        id: upload_clip
+        if: always()
+        shell: bash
+        env:
+          DRIVEWAY_UPLOAD_URL: ${{ secrets.DRIVEWAY_UPLOAD_URL }}
+          DRIVEWAY_API_KEY: ${{ secrets.DRIVEWAY_API_KEY }}
+        run: |
+          echo "clip_url=" >> "$GITHUB_OUTPUT"
+          CLIP_FILE=""
+          for f in session_record.mp4 clip.mp4 "$GITHUB_WORKSPACE/session_record.mp4" "$GITHUB_WORKSPACE/clip.mp4"; do
+            if [ -f "$f" ]; then CLIP_FILE="$f"; break; fi
+          done
+          if [ -z "$CLIP_FILE" ] || [ -z "${DRIVEWAY_UPLOAD_URL:-}" ]; then
+            echo "skip clip: no clip file found or DRIVEWAY_UPLOAD_URL not configured"
+            exit 0
+          fi
+          AUTH=()
+          if [ -n "${DRIVEWAY_API_KEY:-}" ]; then AUTH=(-H "Authorization: Bearer ${DRIVEWAY_API_KEY}"); fi
+          RESP=$(curl -sS -m 120 -F "file=@${CLIP_FILE}" "${AUTH[@]}" "${DRIVEWAY_UPLOAD_URL}" || true)
+          echo "driveway response: ${RESP}"
+          export CLIP_RESULT="${RESP}"
+          CLIP_URL=$(printf '%s' "${CLIP_RESULT}" | sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
+          if [ -z "$CLIP_URL" ]; then
+            CLIP_URL=$(printf '%s' "${CLIP_RESULT}" | sed -n 's/.*"link"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
+          fi
+          if [ -n "$CLIP_URL" ]; then
+            echo "clip_url=$CLIP_URL" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Notify Bot via Webhook (event-driven, 0 polling)
         if: always()
         shell: bash
         env:
           BOT_WEBHOOK_URL: ${{ secrets.BOT_WEBHOOK_URL }}
           BOT_WEBHOOK_SECRET: ${{ secrets.BOT_WEBHOOK_SECRET }}
+          DISCORD_ID: ${{ github.event.client_payload.session }}
+          INSTANCE_ID: ${{ matrix.instance_id }}
+          CLIP_URL: ${{ steps.upload_clip.outputs.clip_url }}
         run: |
-          URL="${BOT_WEBHOOK_URL:-}"
-          if [ -z "$URL" ] || [ ! -f vm-creds.json ]; then
-            echo "skip webhook: not configured or no creds file"
-            exit 0
-          fi
-          curl -sS -X POST "$URL" \
-            -H "Content-Type: application/json" \
-            -H "X-Bot-Secret: ${BOT_WEBHOOK_SECRET:-}" \
-            --data-binary @vm-creds.json \
-            || echo "Bot webhook notify failed (polling will catch it)"
+          python scripts/notify_vm_ready.py || echo "Bot webhook notify failed"
+      - name: Notify Discord — MÁY ẢO / VPS ĐÃ KHỞI TẠO THÀNH CÔNG
+        if: always()
+        shell: bash
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_USER_ID: ${{ secrets.DISCORD_USER_ID }}
+          CLIP_URL: ${{ steps.upload_clip.outputs.clip_url }}
+        run: |
+          python scripts/notify_discord.py || echo "Discord notify failed"
       - name: Keep-Alive
         shell: pwsh
         env:
