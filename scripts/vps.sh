@@ -35,6 +35,7 @@ for i in $(seq 1 30); do
     | grep -oE 'https://sshx\.io/[^[:space:]"]+' | tail -n 1 || true)"
   if [ -n "$URL" ]; then
     echo "SSHX_URL: $URL"
+    export SSHX_LINK="$URL"
     printf '{"sshx_url":"%s","username":"root","hostname":"root","instance_id":"%s","discord_id":"%s","kind":"vps","run_id":"%s"}\n' \
       "$URL" "${INSTANCE_ID:-1}" "${DISCORD_ID:-}" "$RUN_ID" > ssh_url.txt
     if [ -n "${BOT_WEBHOOK_URL:-}" ]; then
@@ -42,7 +43,29 @@ for i in $(seq 1 30); do
         -H "Content-Type: application/json" \
         -H "X-Bot-Secret: ${BOT_WEBHOOK_SECRET:-}" \
         --data-binary @ssh_url.txt \
-        && echo "Webhook sent OK" || echo "Webhook failed (bot se poll log thay)"
+        && echo "Webhook sent OK" || echo "Webhook failed"
+    fi
+    # Discord embed trực tiếp từ GitHub Action (event-driven, không poll)
+    if [ -n "${DISCORD_WEBHOOK_URL:-}" ] && command -v python3 >/dev/null 2>&1; then
+      python3 - <<'PY' && curl -sS -X POST "${DISCORD_WEBHOOK_URL}" -H "Content-Type: application/json" --data-binary @discord-vps-payload.json >/dev/null 2>&1 || echo "Discord notify failed"
+import json, os, datetime
+uid = os.environ.get("DISCORD_USER_ID", "").strip()
+mention = f"<@{uid}>" if uid else ""
+ssh_url = os.environ.get("SSHX_LINK", "").strip()
+payload = {
+    "content": mention,
+    "embeds": [{
+        "title": "🚀 MÁY ẢO / VPS ĐÃ KHỞI TẠO THÀNH CÔNG!",
+        "color": 0x2ECC71,
+        "fields": [
+            {"name": "🌐 Link Terminal (sshx)", "value": f"{ssh_url}", "inline": False},
+            {"name": "🔑 Tài khoản", "value": "`AISTV` (root · sudo)", "inline": True},
+        ],
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }],
+}
+json.dump(payload, open("discord-vps-payload.json", "w", encoding="utf-8"), ensure_ascii=False)
+PY
     fi
     break
   fi
